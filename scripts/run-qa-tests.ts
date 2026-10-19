@@ -1,5 +1,7 @@
 // Standalone CLI QA Verification Runner for Raahi
 import dotenv from 'dotenv';
+import { fallbackRuleBasedParser } from '../src/services/aiService.ts';
+import { resolvePlaceToWaypoint } from '../src/services/placesService.ts';
 dotenv.config();
 
 const GOOGLE_MAPS_API_KEY = process.env.VITE_GOOGLE_MAPS_API_KEY || '';
@@ -449,8 +451,8 @@ async function run() {
   await test(41, 'Bug A: "बीच में मथुरा पर स्टॉप जोड़ दो" creates ADD_STOP (Mathura)', async () => {
     const journey = { origin: { name: 'Delhi' }, destination: { name: 'Agra' }, stops: [] };
     const parsed = fallbackRuleBasedParser('बीच में मथुरा पर स्टॉप जोड़ दो', journey);
-    const hasAddStop = parsed.actions.some((a) => a.type === 'ADD_STOP' && a.placeQuery === 'मथुरा');
-    const hasDestChange = parsed.actions.some((a) => a.type === 'CHANGE_DESTINATION' || a.type === 'SET_DESTINATION');
+    const hasAddStop = parsed.actions.some((a: any) => a.type === 'ADD_STOP' && a.placeQuery === 'मथुरा');
+    const hasDestChange = parsed.actions.some((a: any) => a.type === 'CHANGE_DESTINATION' || a.type === 'SET_DESTINATION');
     return hasAddStop && !hasDestChange;
   });
 
@@ -458,8 +460,8 @@ async function run() {
   await test(42, 'Bug A: "मथुरा को रास्ते में जोड़ दो" creates ADD_STOP', async () => {
     const journey = { origin: { name: 'Delhi' }, destination: { name: 'Agra' }, stops: [] };
     const parsed = fallbackRuleBasedParser('मथुरा को रास्ते में जोड़ दो', journey);
-    const hasAddStop = parsed.actions.some((a) => a.type === 'ADD_STOP' && a.placeQuery === 'मथुरा');
-    const hasDestChange = parsed.actions.some((a) => a.type === 'CHANGE_DESTINATION' || a.type === 'SET_DESTINATION');
+    const hasAddStop = parsed.actions.some((a: any) => a.type === 'ADD_STOP' && a.placeQuery === 'मथुरा');
+    const hasDestChange = parsed.actions.some((a: any) => a.type === 'CHANGE_DESTINATION' || a.type === 'SET_DESTINATION');
     return hasAddStop && !hasDestChange;
   });
 
@@ -467,8 +469,8 @@ async function run() {
   await test(43, 'Bug A: "आगरा जाते समय मथुरा में रुकना है" creates ADD_STOP', async () => {
     const journey = { origin: { name: 'Delhi' }, destination: { name: 'Agra' }, stops: [] };
     const parsed = fallbackRuleBasedParser('आगरा जाते समय मथुरा में रुकना है', journey);
-    const hasAddStop = parsed.actions.some((a) => a.type === 'ADD_STOP' && a.placeQuery === 'मथुरा');
-    const hasDestChange = parsed.actions.some((a) => a.type === 'CHANGE_DESTINATION' || a.type === 'SET_DESTINATION');
+    const hasAddStop = parsed.actions.some((a: any) => a.type === 'ADD_STOP' && a.placeQuery === 'मथुरा');
+    const hasDestChange = parsed.actions.some((a: any) => a.type === 'CHANGE_DESTINATION' || a.type === 'SET_DESTINATION');
     return hasAddStop && !hasDestChange;
   });
 
@@ -476,8 +478,8 @@ async function run() {
   await test(44, 'Bug A: "मथुरा को स्टॉप बनाओ, मंजिल मत बदलना" preserves destination', async () => {
     const journey = { origin: { name: 'Delhi' }, destination: { name: 'Agra' }, stops: [] };
     const parsed = fallbackRuleBasedParser('मथुरा को स्टॉप बनाओ, मंजिल मत बदलना', journey);
-    const hasAddStop = parsed.actions.some((a) => a.type === 'ADD_STOP' && a.placeQuery === 'मथुरा');
-    const hasDestChange = parsed.actions.some((a) => a.type === 'CHANGE_DESTINATION' || a.type === 'SET_DESTINATION');
+    const hasAddStop = parsed.actions.some((a: any) => a.type === 'ADD_STOP' && a.placeQuery === 'मथुरा');
+    const hasDestChange = parsed.actions.some((a: any) => a.type === 'CHANGE_DESTINATION' || a.type === 'SET_DESTINATION');
     return hasAddStop && !hasDestChange;
   });
 
@@ -485,8 +487,8 @@ async function run() {
   await test(45, 'Bug A: "मथुरा वाला स्टॉप हटा दो" creates REMOVE_STOP', async () => {
     const journey = { origin: { name: 'Delhi' }, destination: { name: 'Agra' }, stops: [{ name: 'मथुरा' }] };
     const parsed = fallbackRuleBasedParser('मथुरा वाला स्टॉप हटा दो', journey);
-    const hasRemove = parsed.actions.some((a) => a.type === 'REMOVE_STOP' && a.targetStopIdentifier?.byName === 'मथुरा');
-    const hasDestChange = parsed.actions.some((a) => a.type === 'CHANGE_DESTINATION' || a.type === 'SET_DESTINATION');
+    const hasRemove = parsed.actions.some((a: any) => a.type === 'REMOVE_STOP' && a.targetStopIdentifier?.byName === 'मथुरा');
+    const hasDestChange = parsed.actions.some((a: any) => a.type === 'CHANGE_DESTINATION' || a.type === 'SET_DESTINATION');
     return hasRemove && !hasDestChange;
   });
 
