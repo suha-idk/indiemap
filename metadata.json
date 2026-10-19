@@ -1,0 +1,6 @@
+{
+  "name": "Raahi (राही) - Voice Navigation",
+  "description": "India-first, multilingual, voice-controlled navigation application for commuters, drivers, and delivery partners with real Google Maps routing, detour optimization, and natural speech.",
+  "requestFramePermissions": ["geolocation", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
