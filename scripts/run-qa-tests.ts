@@ -1,7 +1,9 @@
 // Standalone CLI QA Verification Runner for Raahi
 import dotenv from 'dotenv';
 import { fallbackRuleBasedParser } from '../src/services/aiService.ts';
-import { resolvePlaceToWaypoint } from '../src/services/placesService.ts';
+import { resolvePlaceToWaypoint, scoreCandidatePlace, resolvePlaceDetailed } from '../src/services/placesService.ts';
+import { parseTranslationIntent } from '../src/services/translationService.ts';
+import { speechService } from '../src/services/speechService.ts';
 dotenv.config();
 
 const GOOGLE_MAPS_API_KEY = process.env.VITE_GOOGLE_MAPS_API_KEY || '';
@@ -517,6 +519,175 @@ async function run() {
   await test(48, 'Bug B: Unidentified query yields null instead of fake waypoint', async () => {
     const wp = await resolvePlaceToWaypoint('xyzqwe12345nonexistentplace789');
     return wp === null;
+  });
+
+  // 49. Failure A: "Mujhe Agra jaana hai." extracts placeQuery "Agra" and sets destination
+  await test(49, 'Failure A: "Mujhe Agra jaana hai." extracts placeQuery "Agra"', async () => {
+    const journey = { origin: null, destination: null, stops: [] };
+    const parsed = fallbackRuleBasedParser('Mujhe Agra jaana hai.', journey);
+    const hasDest = parsed.actions.some((a: any) => a.type === 'SET_DESTINATION' && a.placeQuery === 'Agra');
+    return hasDest;
+  });
+
+  // 50. Failure B: "Set the destination to Agra." extracts placeQuery "Agra" cleanly
+  await test(50, 'Failure B: "Set the destination to Agra." extracts placeQuery "Agra"', async () => {
+    const journey = { origin: null, destination: null, stops: [] };
+    const parsed = fallbackRuleBasedParser('Set the destination to Agra.', journey, 'hi');
+    const hasDest = parsed.actions.some((a: any) => a.type === 'SET_DESTINATION' && a.placeQuery === 'Agra');
+    return hasDest;
+  });
+
+  // 51. Failure C: Devanagari "हौज खास" matches Google Places candidate "Hauz Khas" with confidence >= 0.8
+  await test(51, 'Failure C: Devanagari "हौज खास" matches candidate "Hauz Khas" (score >= 0.8)', async () => {
+    const candidate = {
+      id: 'hk-1',
+      name: 'Hauz Khas',
+      address: 'Hauz Khas, New Delhi, Delhi',
+      types: ['sublocality', 'political', 'neighborhood'],
+      latLng: { lat: 28.5494, lng: 77.2001 },
+    };
+    const score = scoreCandidatePlace('हौज खास', candidate);
+    return score >= 0.8;
+  });
+
+  // 52. Failure C: Devanagari "रेल म्यूजियम" matches "National Rail Museum" with confidence >= 0.8
+  await test(52, 'Failure C: Devanagari "रेल म्यूजियम" matches "National Rail Museum" (score >= 0.8)', async () => {
+    const candidate = {
+      id: 'rm-1',
+      name: 'National Rail Museum',
+      address: 'Chanakyapuri, New Delhi, Delhi',
+      types: ['museum', 'tourist_attraction', 'point_of_interest'],
+      latLng: { lat: 28.5855, lng: 77.1802 },
+    };
+    const score = scoreCandidatePlace('रेल म्यूजियम', candidate);
+    return score >= 0.8;
+  });
+
+  // 53. Regional Language: Marathi "मला हैदराबादला जायचे आहे" extracts destination "Hyderabad"
+  await test(53, 'Marathi: "मला हैदराबादला जायचे आहे" extracts destination Hyderabad', async () => {
+    const journey = { origin: null, destination: null, stops: [] };
+    const parsed = fallbackRuleBasedParser('मला हैदराबादला जायचे आहे', journey);
+    const hasDest = parsed.actions.some((a: any) => a.type === 'SET_DESTINATION' && a.placeQuery.toLowerCase().includes('हैदराबाद'));
+    return hasDest && parsed.detectedLanguage === 'mr';
+  });
+
+  // 54. Regional Language: Telugu "నన్ను విజయవాడకు తీసుకెళ్లండి" extracts destination "Vijayawada"
+  await test(54, 'Telugu: "నన్ను విజయవాడకు తీసుకెళ్లండి" extracts destination Vijayawada', async () => {
+    const journey = { origin: null, destination: null, stops: [] };
+    const parsed = fallbackRuleBasedParser('నన్ను విజయవాడకు తీసుకెళ్లండి', journey);
+    const hasDest = parsed.actions.some((a: any) => a.type === 'SET_DESTINATION' && a.placeQuery.includes('విజయవాడ'));
+    return hasDest && parsed.detectedLanguage === 'te';
+  });
+
+  // 55. Regional Language: Tamil "என்னை மதுரைக்கு அழைத்துச் செல்லுங்கள்" extracts destination "Madurai"
+  await test(55, 'Tamil: "என்னை மதுரைக்கு அழைத்துச் செல்லுங்கள்" extracts destination Madurai', async () => {
+    const journey = { origin: null, destination: null, stops: [] };
+    const parsed = fallbackRuleBasedParser('என்னை மதுரைக்கு அழைத்துச் செல்லுங்கள்', journey);
+    const hasDest = parsed.actions.some((a: any) => a.type === 'SET_DESTINATION' && a.placeQuery.includes('மதுரை'));
+    return hasDest && parsed.detectedLanguage === 'ta';
+  });
+
+  // 56. Regional Language: Bengali "আমাকে কলকাতায় নিয়ে চলুন" extracts destination "Kolkata"
+  await test(56, 'Bengali: "আমাকে কলকাতায় নিয়ে চলুন" extracts destination Kolkata', async () => {
+    const journey = { origin: null, destination: null, stops: [] };
+    const parsed = fallbackRuleBasedParser('আমাকে কলকাতায় নিয়ে চলুন', journey);
+    const hasDest = parsed.actions.some((a: any) => a.type === 'SET_DESTINATION' && a.placeQuery.includes('কলকাতায়'));
+    return hasDest && parsed.detectedLanguage === 'bn';
+  });
+
+  // 57. Regional Language: Gujarati "મારે અમદાવાદ જવું છે" extracts destination "Ahmedabad"
+  await test(57, 'Gujarati: "મારે અમદાવાદ જવું છે" extracts destination Ahmedabad', async () => {
+    const journey = { origin: null, destination: null, stops: [] };
+    const parsed = fallbackRuleBasedParser('મારે અમદાવાદ જવું છે', journey);
+    const hasDest = parsed.actions.some((a: any) => a.type === 'SET_DESTINATION' && a.placeQuery.includes('અમદાવાદ'));
+    return hasDest && parsed.detectedLanguage === 'gu';
+  });
+
+  // 58. Mixed-Language: "Agra destination રાખો અને Mathura માં વચ્ચે stop add કરો"
+  await test(58, 'Mixed-Language: Gujarati + English stop addition', async () => {
+    const journey = { origin: null, destination: null, stops: [] };
+    const parsed = fallbackRuleBasedParser('Agra destination રાખો અને Mathura માં વચ્ચે stop add કરો', journey);
+    const hasDest = parsed.actions.some((a: any) => (a.type === 'SET_DESTINATION' || a.type === 'CHANGE_DESTINATION') && a.placeQuery.includes('Agra'));
+    const hasStop = parsed.actions.some((a: any) => a.type === 'ADD_STOP' && a.placeQuery.includes('Mathura'));
+    return hasDest && hasStop;
+  });
+
+  // 59. Mixed-Language: "મારે Delhi જવું છે, then add a stop at Gurugram"
+  await test(59, 'Mixed-Language: Gujarati destination + English stop', async () => {
+    const journey = { origin: null, destination: null, stops: [] };
+    const parsed = fallbackRuleBasedParser('મારે Delhi જવું છે, then add a stop at Gurugram', journey);
+    const hasDest = parsed.actions.some((a: any) => a.type === 'SET_DESTINATION' && a.placeQuery.includes('Delhi'));
+    const hasStop = parsed.actions.some((a: any) => a.type === 'ADD_STOP' && a.placeQuery.includes('Gurugram'));
+    return hasDest && hasStop;
+  });
+
+  // 60. Mixed-Language: "Pune se Mumbai jaana hai, बीच में Lonavala par stop add karo"
+  await test(60, 'Mixed-Language: Origin + Destination + Hindi stop', async () => {
+    const journey = { origin: null, destination: null, stops: [] };
+    const parsed = fallbackRuleBasedParser('Pune se Mumbai jaana hai, बीच में Lonavala par stop add karo', journey);
+    const hasOrig = parsed.actions.some((a: any) => a.type === 'SET_ORIGIN' && a.placeQuery.includes('Pune'));
+    const hasDest = parsed.actions.some((a: any) => (a.type === 'SET_DESTINATION' || a.type === 'CHANGE_DESTINATION') && a.placeQuery.includes('Mumbai'));
+    const hasStop = parsed.actions.some((a: any) => a.type === 'ADD_STOP' && a.placeQuery.includes('Lonavala'));
+    return hasOrig && hasDest && hasStop;
+  });
+
+  // 61. Explicit Translation Command Separation: 'Translate "Set the destination to Agra" into Hindi'
+  await test(61, 'Translation: Pure translation command does NOT create navigation actions', async () => {
+    const parsedIntent = parseTranslationIntent('Translate "Set the destination to Agra" into Hindi');
+    const isTransOnly = parsedIntent.isTranslationOnly;
+    const targetIsHi = parsedIntent.targetLang === 'hi';
+    const textPreserved = parsedIntent.textToTranslate === 'Set the destination to Agra';
+    return isTransOnly && targetIsHi && textPreserved;
+  });
+
+  // 62. Translation Intent Separation in Rule Parser:
+  await test(62, 'Translation: Fallback parser returns intent "translate" with 0 navigation actions', async () => {
+    const journey = { origin: null, destination: null, stops: [] };
+    const parsed = fallbackRuleBasedParser('Translate "Set the destination to Agra" into Hindi', journey);
+    return parsed.intent === 'translate' && parsed.actions.length === 0;
+  });
+
+  // 63. Microphone Lifecycle: 6.5s inactivity timeout configured
+  await test(63, 'Microphone Lifecycle: 6.5s inactivity timeout configured', async () => {
+    return speechService.inactivityTimeoutMs === 6500;
+  });
+
+  // 64. Microphone Lifecycle: Initial authoritative state is 'OFF'
+  await test(64, 'Microphone Lifecycle: Initial authoritative state is "OFF"', async () => {
+    const state = speechService.getMicState();
+    return state === 'OFF';
+  });
+
+  // 65. Candidate Scoring: Educational query penalizes apartments
+  await test(65, 'Candidate Scoring: Educational query penalizes unrelated apartment (score < 0.25)', async () => {
+    const apartmentCandidate = {
+      id: 'apt-1',
+      name: 'Somya Apartments RK Puram',
+      address: 'RK Puram, Sector 9, New Delhi',
+      types: ['apartment_building', 'residential'],
+      latLng: { lat: 28.56, lng: 77.18 },
+    };
+    const score = scoreCandidatePlace('DPS RK Puram', apartmentCandidate);
+    return score < 0.25;
+  });
+
+  // 66. Candidate Scoring: Locality query penalizes unrelated gyms
+  await test(66, 'Candidate Scoring: Locality query penalizes unrelated gym (score < 0.25)', async () => {
+    const gymCandidate = {
+      id: 'gym-1',
+      name: 'Anytime Fitness Rajouri Garden',
+      address: 'Rajouri Garden, New Delhi',
+      types: ['gym', 'fitness_center'],
+      latLng: { lat: 28.64, lng: 77.12 },
+    };
+    const score = scoreCandidatePlace('Rajouri Garden', gymCandidate);
+    return score < 0.25;
+  });
+
+  // 67. Detailed Resolution: returns structured status 'not_found' without creating fake waypoint
+  await test(67, 'Detailed Resolution: Bogus query returns status "not_found" and waypoint null', async () => {
+    const res = await resolvePlaceDetailed('totallyfakeunresolvedplacename999');
+    return res.status === 'not_found' && res.waypoint === null;
   });
 
   console.log('\n====================================================');

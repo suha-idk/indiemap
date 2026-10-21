@@ -13,11 +13,12 @@ import {
   AtomicAction,
 } from '../types/navigation';
 import { computeRoute } from '../services/routesService';
-import { resolvePlaceToWaypoint, searchPlaces, searchNearbyPlaces } from '../services/placesService';
+import { resolvePlaceToWaypoint, resolvePlaceDetailed, searchPlaces, searchNearbyPlaces } from '../services/placesService';
 import { interpretCommand } from '../services/aiService';
 import { findLowestDetourStop } from '../services/detourService';
 import { resolveSearchAnchor } from '../services/anchorService';
 import { speechService } from '../services/speechService';
+import { conversationContext } from '../services/conversationContext';
 
 interface JourneyContextType {
   journey: JourneyState;
@@ -53,7 +54,7 @@ interface JourneyContextType {
   clearAllStops: () => void;
   toggleAvoidTolls: () => void;
   setTravelMode: (mode: 'DRIVE' | 'TWO_WHEELER') => void;
-  executeCommand: (commandText: string) => Promise<{ success: boolean; message: string }>;
+  executeCommand: (commandText: string, responseLang?: string) => Promise<{ success: boolean; message: string }>;
   confirmProposal: () => void;
   cancelProposal: () => void;
   undo: () => void;
@@ -633,15 +634,111 @@ export const JourneyProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   // Main Validated Execution Pipeline: Single Unified Transaction for Combined Edits
   const executeCommand = useCallback(
-    async (commandText: string): Promise<{ success: boolean; message: string }> => {
+    async (commandText: string, responseLang?: string): Promise<{ success: boolean; message: string }> => {
       const tStart = performance.now();
       setIsProcessingCommand(true);
       const current = journeyRef.current;
 
+      // 0. Contextual Follow-up Clarification Check
+      if (conversationContext.isClarificationActive()) {
+        const followUp = conversationContext.resolveFollowUpReference(commandText);
+        if (followUp.type === 'cancel') {
+          conversationContext.clearPendingClarification();
+          const cancelMsg = followUp.userMessage || 'Cancelled selection.';
+          setLastMessage(cancelMsg);
+          speechService.speak(cancelMsg);
+          setIsProcessingCommand(false);
+          return { success: true, message: cancelMsg };
+        }
+        if (followUp.type === 'select_candidate' && followUp.selectedCandidate) {
+          const pending = conversationContext.getPendingClarification();
+          conversationContext.clearPendingClarification();
+          if (pending) {
+            const cand = followUp.selectedCandidate;
+            const chosenWaypoint: Waypoint = {
+              id: cand.id,
+              placeId: cand.id,
+              name: cand.name,
+              address: cand.address,
+              latLng: cand.latLng,
+              category: (cand.category as any) || 'custom',
+            };
+
+            let updatedDestination = current.destination;
+            let updatedOrigin = current.origin;
+            let updatedStops = [...current.stops];
+
+            if (pending.targetRole === 'destination') {
+              updatedDestination = chosenWaypoint;
+              if (!updatedOrigin) {
+                updatedOrigin = {
+                  id: 'curr-loc',
+                  name: 'Current Location',
+                  address: userLocation ? 'My Current GPS Location' : 'Delhi, India',
+                  latLng: userLocation || { lat: 28.6139, lng: 77.209 },
+                  isCurrentLocation: true,
+                };
+              }
+            } else if (pending.targetRole === 'origin') {
+              updatedOrigin = chosenWaypoint;
+            } else {
+              updatedStops.push(chosenWaypoint);
+            }
+
+            // Execute any pending actions that were waiting on this clarification
+            for (const act of pending.pendingActions) {
+              if (act.type === 'ADD_STOP' && act.placeQuery) {
+                const addWp = await resolvePlaceToWaypoint(act.placeQuery, chosenWaypoint.latLng, act.category);
+                if (addWp) updatedStops.push(addWp);
+              }
+            }
+
+            if (followUp.additionalActions) {
+              for (const act of followUp.additionalActions) {
+                if (act.type === 'ADD_STOP' && act.placeQuery) {
+                  const addWp = await resolvePlaceToWaypoint(act.placeQuery, chosenWaypoint.latLng, act.category);
+                  if (addWp) updatedStops.push(addWp);
+                }
+              }
+            }
+
+            pushHistory(current, activeRoute, commandText);
+
+            const nextJourney: JourneyState = {
+              ...current,
+              revision: current.revision + 1,
+              origin: updatedOrigin,
+              destination: updatedDestination,
+              stops: updatedStops,
+            };
+            setJourney(nextJourney);
+            await triggerRouting(nextJourney);
+
+            const isHindi = (responseLang || 'hi').startsWith('hi') || /[\u0900-\u097F]/.test(commandText);
+            const respMsg = isHindi
+              ? `पुष्टि हो गई: ${chosenWaypoint.name}. रास्ता अपडेट कर दिया गया है.`
+              : `Confirmed: ${chosenWaypoint.name}. Route updated.`;
+            setLastMessage(respMsg);
+            speechService.speak(respMsg);
+            setIsProcessingCommand(false);
+            return { success: true, message: respMsg };
+          }
+        }
+      }
+
       try {
-        const interpretation = await interpretCommand(commandText, current);
+        const interpretation = await interpretCommand(commandText, current, responseLang || 'hi');
         const tIntent = performance.now();
         const intentMs = Math.round(tIntent - tStart);
+
+        // Explicit Translation Command: distinct from navigation execution
+        if (interpretation.intent === 'translate') {
+          const transMsg = interpretation.spokenResponse || 'Translation complete.';
+          setLastMessage(transMsg);
+          speechService.speak(transMsg);
+          setIsProcessingCommand(false);
+          return { success: true, message: transMsg };
+        }
 
         if (!interpretation.actions || interpretation.actions.length === 0) {
           const fallbackMsg = interpretation.spokenResponse || 'Could not understand command. Please try again.';
@@ -756,10 +853,36 @@ export const JourneyProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
         if (destAction?.placeQuery) {
           const bias = updatedOrigin?.latLng || userLocation || undefined;
-          const resolvedDest = await resolvePlaceToWaypoint(destAction.placeQuery, bias);
-          if (resolvedDest) {
-            updatedDestination = resolvedDest;
-            appliedDescriptions.push(`destination set to ${resolvedDest.name}`);
+          const destRes = await resolvePlaceDetailed(destAction.placeQuery, bias);
+          if (destRes.status === 'ambiguous' && destRes.candidates.length >= 2) {
+            conversationContext.setPendingClarification({
+              originalCommand: commandText,
+              targetRole: 'destination',
+              query: destAction.placeQuery,
+              candidates: destRes.candidates.map((c, i) => ({
+                index: i + 1,
+                id: c.id,
+                name: c.name,
+                address: c.address,
+                latLng: c.latLng,
+                category: c.category,
+                confidenceScore: c.confidenceScore,
+              })),
+              pendingActions: interpretation.actions.filter((a) => a !== destAction),
+              targetAction: destAction,
+              responseLanguage: responseLang || 'hi',
+            });
+
+            const clarifyMsg = destRes.clarificationMessage || `Found multiple matching locations for "${destAction.placeQuery}". Which one do you mean?`;
+            setLastMessage(clarifyMsg);
+            speechService.speak(clarifyMsg);
+            setIsProcessingCommand(false);
+            return { success: true, message: clarifyMsg };
+          }
+
+          if (destRes.waypoint) {
+            updatedDestination = destRes.waypoint;
+            appliedDescriptions.push(`destination set to ${destRes.waypoint.name}`);
           } else {
             appliedDescriptions.push(`could not verify destination "${destAction.placeQuery}"`);
           }
@@ -816,7 +939,33 @@ export const JourneyProvider: React.FC<{ children: React.ReactNode }> = ({ child
           const cleanQuery = add.placeQuery;
           const biasCenter = resolvedAnchor?.coordinates || updatedOrigin?.latLng || userLocation || undefined;
 
-          const resolvedWp = await resolvePlaceToWaypoint(cleanQuery, biasCenter, add.category);
+          const detailedWp = await resolvePlaceDetailed(cleanQuery, biasCenter, add.category);
+          if (detailedWp.status === 'ambiguous' && detailedWp.candidates.length >= 2) {
+            conversationContext.setPendingClarification({
+              originalCommand: commandText,
+              targetRole: 'stop',
+              query: cleanQuery,
+              candidates: detailedWp.candidates.map((c, i) => ({
+                index: i + 1,
+                id: c.id,
+                name: c.name,
+                address: c.address,
+                latLng: c.latLng,
+                category: c.category,
+                confidenceScore: c.confidenceScore,
+              })),
+              pendingActions: addActions.filter((a) => a !== add),
+              targetAction: add,
+              responseLanguage: responseLang || 'hi',
+            });
+
+            const clarifyMsg = detailedWp.clarificationMessage || `Found multiple matching locations for "${cleanQuery}". Which one do you mean?`;
+            setLastMessage(clarifyMsg);
+            speechService.speak(clarifyMsg);
+            setIsProcessingCommand(false);
+            return { success: true, message: clarifyMsg };
+          }
+          const resolvedWp = detailedWp.waypoint;
 
           if (resolvedWp) {
             // Duplicate stop prevention: don't add if identical name or placeId already in route
@@ -875,6 +1024,22 @@ export const JourneyProvider: React.FC<{ children: React.ReactNode }> = ({ child
         const tPlaces = performance.now();
         const placeSearchMs = Math.round(tPlaces - tIntent);
 
+        // Check if any genuine changes were resolved
+        const hasActualChanges =
+          updatedDestination !== current.destination ||
+          updatedOrigin !== current.origin ||
+          updatedTravelMode !== current.travelMode ||
+          updatedAvoidTolls !== current.avoidTolls ||
+          JSON.stringify(updatedStops.map((s) => s.id)) !== JSON.stringify(current.stops.map((s) => s.id));
+
+        if (!hasActualChanges) {
+          const unverifiedMsg = appliedDescriptions.find((d) => d.includes('could not')) || 'Could not verify requested location. Journey left unchanged.';
+          setLastMessage(unverifiedMsg);
+          speechService.speak(unverifiedMsg);
+          setIsProcessingCommand(false);
+          return { success: false, message: unverifiedMsg };
+        }
+
         // Step 5: Commit single consolidated state mutation
         const nextJourney: JourneyState = {
           ...current,
@@ -903,11 +1068,12 @@ export const JourneyProvider: React.FC<{ children: React.ReactNode }> = ({ child
         }
 
         const isHindi = interpretation.detectedLanguage === 'hi' || /[\u0900-\u097F]/.test(commandText);
+        const successfulDescriptions = appliedDescriptions.filter((d) => !d.includes('could not'));
         const responseMsg =
-          appliedDescriptions.length > 0
+          successfulDescriptions.length > 0
             ? (isHindi
-                ? `रास्ता अपडेट हो गया है: ${appliedDescriptions.join(', ')}.`
-                : `Updated route: ${appliedDescriptions.join(', ')}.`)
+                ? `रास्ता अपडेट हो गया है: ${successfulDescriptions.join(', ')}.`
+                : `Updated route: ${successfulDescriptions.join(', ')}.`)
             : (interpretation.spokenResponse || 'No changes applied.');
 
         setLastMessage(responseMsg);

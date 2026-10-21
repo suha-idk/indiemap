@@ -12,52 +12,66 @@ export const VoiceController: React.FC = () => {
     undo,
   } = useJourney();
 
-  const [isListening, setIsListening] = useState(false);
+  const [micState, setMicState] = useState(speechService.getMicState());
   const [transcript, setTranscript] = useState('');
   const [typedInput, setTypedInput] = useState('');
   const [selectedLang, setSelectedLang] = useState<SupportedSpeechLang>('hi-IN');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  useEffect(() => {
+    const unsub = speechService.onMicStateChange((state) => {
+      setMicState(state);
+    });
+    return () => unsub();
+  }, []);
+
   const startVoice = () => {
     setErrorMessage(null);
     setTranscript('');
-    setIsListening(true);
 
     speechService.setLanguage(selectedLang);
     speechService.startListening({
       onStart: () => {
-        setIsListening(true);
+        setErrorMessage(null);
       },
       onInterimResult: (text) => {
         setTranscript(text);
       },
       onFinalResult: (finalText) => {
-        setIsListening(false);
         setTranscript(finalText);
         if (finalText.trim()) {
-          executeCommand(finalText.trim());
+          const respLang = selectedLang.split('-')[0] || 'hi';
+          executeCommand(finalText.trim(), respLang);
         }
       },
       onError: (err) => {
-        setIsListening(false);
         setErrorMessage(err);
       },
       onEnd: () => {
-        setIsListening(false);
+        // Microphone auto-off or manual off completed
       },
     });
   };
 
   const stopVoice = () => {
     speechService.stopListening();
-    setIsListening(false);
+  };
+
+  const toggleVoice = () => {
+    if (micState === 'STARTING' || micState === 'STOPPING') return;
+    if (micState === 'LISTENING') {
+      stopVoice();
+    } else {
+      startVoice();
+    }
   };
 
   const handleManualSubmit = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     const cmd = (typedInput || transcript).trim();
     if (!cmd) return;
-    executeCommand(cmd);
+    const respLang = selectedLang.split('-')[0] || 'hi';
+    executeCommand(cmd, respLang);
     setTypedInput('');
     setTranscript('');
   };
@@ -89,10 +103,10 @@ export const VoiceController: React.FC = () => {
       )}
 
       {/* Live Listening Transcript Bar */}
-      {isListening && (
+      {micState === 'LISTENING' && (
         <div className="flex items-center gap-2 p-2.5 rounded-xl bg-blue-950/60 border border-blue-600/60 animate-pulse text-xs text-blue-200">
           <span className="w-2.5 h-2.5 rounded-full bg-blue-500 animate-ping shrink-0" />
-          <span className="font-semibold text-blue-300">Listening ({selectedLang}):</span>
+          <span className="font-semibold text-blue-300">Listening ({selectedLang}) [Auto-off 6.5s]:</span>
           <span className="italic truncate">{transcript || 'Say destination, stop, or route change...'}</span>
         </div>
       )}
@@ -102,15 +116,24 @@ export const VoiceController: React.FC = () => {
         {/* Big Large Voice Microphone Button */}
         <button
           type="button"
-          onClick={isListening ? stopVoice : startVoice}
+          onClick={toggleVoice}
+          disabled={micState === 'STARTING' || micState === 'STOPPING'}
           className={`relative p-3.5 rounded-2xl shadow-xl transition active:scale-95 flex items-center justify-center shrink-0 ${
-            isListening
+            micState === 'LISTENING'
               ? 'bg-rose-600 text-white animate-pulse ring-4 ring-rose-500/30'
+              : micState === 'STARTING'
+              ? 'bg-amber-600 text-white animate-pulse cursor-wait'
               : 'bg-blue-600 hover:bg-blue-500 text-white'
           }`}
-          title={isListening ? 'Tap to stop listening' : 'Tap to speak'}
+          title={
+            micState === 'LISTENING'
+              ? 'Tap to stop listening (Auto-off after 6.5s silence)'
+              : micState === 'STARTING'
+              ? 'Connecting microphone...'
+              : 'Tap to speak'
+          }
         >
-          {isListening ? <MicOff className="w-6 h-6" /> : <Mic className="w-6 h-6" />}
+          {micState === 'LISTENING' ? <MicOff className="w-6 h-6" /> : <Mic className="w-6 h-6" />}
         </button>
 
         {/* Text Command Input Bar */}
